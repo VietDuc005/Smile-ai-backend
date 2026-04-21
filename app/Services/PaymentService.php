@@ -395,6 +395,10 @@ final class PaymentService
             return trim(substr($normalized, 7));
         }
 
+        if (stripos($normalized, 'Apikey ') === 0) {
+            return trim(substr($normalized, 7));
+        }
+
         return $normalized;
     }
 
