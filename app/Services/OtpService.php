@@ -172,7 +172,7 @@ final class OtpService
     private function fallbackDir(): string
     {
         // __DIR__ = app/Services → 3 levels up = project root
-        $dir = rtrim(__DIR__ . '/../../../storage/app/' . self::FALLBACK_DIR, '/\\');
+        $dir = rtrim(__DIR__ . '/../../storage/app/' . self::FALLBACK_DIR, '/\\');
 
         if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) {
             throw new \RuntimeException("Cannot create OTP fallback dir: {$dir}");
