@@ -57,7 +57,10 @@ final class RedisService
         $host = (string) $this->envService->get('REDIS_HOST', '127.0.0.1');
         $port = $this->envService->int('REDIS_PORT', 6379);
         $timeout = (float) $this->envService->get('REDIS_TIMEOUT', 2.5);
-        $connected = $redis->connect($host, $port, $timeout);
+        $isTls = str_starts_with($host, 'tls://');
+        $connected = $isTls
+            ? $redis->connect($host, $port, $timeout, null, 0, 0, ['stream' => ['verify_peer' => false, 'verify_peer_name' => false]])
+            : $redis->connect($host, $port, $timeout);
 
         if ($connected !== true) {
             throw new InfrastructureException('Unable to connect to Redis.');
