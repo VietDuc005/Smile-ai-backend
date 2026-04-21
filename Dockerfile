@@ -1,6 +1,6 @@
 FROM php:8.2-apache
 
-RUN apt-get update && apt-get install -y unzip && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y unzip libssl-dev && rm -rf /var/lib/apt/lists/* \
     && docker-php-ext-install pdo pdo_mysql \
     && pecl install redis && docker-php-ext-enable redis \
     && a2enmod rewrite

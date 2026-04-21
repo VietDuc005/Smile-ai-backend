@@ -1,5 +1,6 @@
 .env
 vendor
 composer.lock
+storage
 server.out.log
 server.err.log
