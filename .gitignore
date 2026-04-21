@@ -1,0 +1,5 @@
+.env
+vendor/
+storage/
+server.out.log
+server.err.log

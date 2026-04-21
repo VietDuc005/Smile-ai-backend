@@ -1,0 +1,13 @@
+{
+    "name": "smile-ai/backend",
+    "description": "Smile AI backend services",
+    "type": "project",
+    "require": {
+        "phpmailer/phpmailer": "^7.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "app/"
+        }
+    }
+}
