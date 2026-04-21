@@ -2,6 +2,7 @@ FROM php:8.2-apache
 
 RUN apt-get update && apt-get install -y unzip && rm -rf /var/lib/apt/lists/* \
     && docker-php-ext-install pdo pdo_mysql \
+    && pecl install redis && docker-php-ext-enable redis \
     && a2enmod rewrite
 
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
@@ -13,8 +14,9 @@ RUN composer install --no-dev --optimize-autoloader --no-scripts --ignore-platfo
 
 COPY . .
 
-RUN mkdir -p /var/www/html/storage/app \
+RUN mkdir -p /var/www/html/storage/app/otp_sessions \
     && chown -R www-data:www-data /var/www/html/storage \
+    && chmod -R 775 /var/www/html/storage \
     && printf '<Directory /var/www/html>\n    AllowOverride All\n    Require all granted\n</Directory>\n' \
        > /etc/apache2/conf-available/app.conf \
     && a2enconf app
