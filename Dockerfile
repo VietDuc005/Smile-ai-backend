@@ -1,6 +1,8 @@
 FROM php:8.2-apache
 
-RUN docker-php-ext-install pdo pdo_mysql && a2enmod rewrite
+RUN apt-get update && apt-get install -y unzip && rm -rf /var/lib/apt/lists/* \
+    && docker-php-ext-install pdo pdo_mysql \
+    && a2enmod rewrite
 
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
@@ -11,7 +13,8 @@ RUN composer install --no-dev --optimize-autoloader --no-scripts --ignore-platfo
 
 COPY . .
 
-RUN chown -R www-data:www-data /var/www/html/storage \
+RUN mkdir -p /var/www/html/storage/app \
+    && chown -R www-data:www-data /var/www/html/storage \
     && printf '<Directory /var/www/html>\n    AllowOverride All\n    Require all granted\n</Directory>\n' \
        > /etc/apache2/conf-available/app.conf \
     && a2enconf app
