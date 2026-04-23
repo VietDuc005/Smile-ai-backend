@@ -71,6 +71,26 @@ final class OrderController
         }
     }
 
+    public function provision(array $request): array
+    {
+        $routeParams = is_array($request['route_params'] ?? null) ? $request['route_params'] : [];
+        $body = is_array($request['body'] ?? null) ? $request['body'] : [];
+        $orderId = (string) ($routeParams['id'] ?? '');
+        $itemId = (string) ($routeParams['itemId'] ?? '');
+
+        try {
+            return $this->success('Account provisioned successfully.', [
+                'order' => $this->orderService->manualProvisionItem($orderId, $itemId, $body),
+            ]);
+        } catch (NotFoundException $exception) {
+            return $this->error($exception->getMessage(), 404);
+        } catch (ValidationException $exception) {
+            return $this->error($exception->getMessage(), 422);
+        } catch (InfrastructureException $exception) {
+            return $this->error($exception->getMessage(), 500);
+        }
+    }
+
     public function cancel(array $request): array
     {
         $routeParams = is_array($request['route_params'] ?? null) ? $request['route_params'] : [];

@@ -39,8 +39,8 @@ final class NotificationService
         $this->createNotification(
             $userId,
             Notification::TYPE_ORDER_COMPLETED,
-            'Thanh toan thanh cong',
-            sprintf('Don hang %s da duoc xac nhan. Tai khoan dang duoc cap phat.', $transferSyntax),
+            'Thanh toán thành công',
+            sprintf('Đơn hàng %s đã được xác nhận. Tài khoản đang được cấp phát.', $transferSyntax),
             ['order_id' => $orderId]
         );
 
@@ -58,14 +58,52 @@ final class NotificationService
             $this->createNotification(
                 $userId,
                 Notification::TYPE_ACCOUNT_GRANTED,
-                'Tai khoan da duoc cap',
-                sprintf('Thong tin dang nhap cho don hang %s da san sang. Vao muc Don Hang de xem.', $transferSyntax),
+                'Tài khoản đã được cấp',
+                sprintf('Thông tin đăng nhập cho đơn hàng %s đã sẵn sàng. Vào mục Đơn Hàng để xem.', $transferSyntax),
                 ['order_id' => $orderId]
             );
         }
 
         if ($userEmail !== '') {
             $this->safelySendOrderCompletedEmail($userEmail, $completedOrder);
+        }
+    }
+
+    /**
+     * Broadcasts a voucher-created notification to all active users.
+     */
+    public function notifyVoucherCreated(array $voucher): void
+    {
+        try {
+            $voucherCode = strtoupper(trim((string) ($voucher['code'] ?? '')));
+            $discountType = (string) ($voucher['discount_type'] ?? 'fixed');
+            $discountValue = (float) ($voucher['discount_value'] ?? 0);
+
+            if ($discountType === 'percent') {
+                $discountDisplay = rtrim(rtrim(number_format($discountValue, 2, '.', ''), '0'), '.') . '%';
+            } else {
+                $discountDisplay = number_format((int) $discountValue, 0, '.', '.') . '₫';
+            }
+
+            $message = sprintf(
+                'Mã giảm giá mới "%s" vừa được phát hành — giảm %s. Dùng ngay khi đặt hàng!',
+                $voucherCode,
+                $discountDisplay
+            );
+
+            $userIds = $this->fetchAllActiveUserIds();
+
+            foreach ($userIds as $userId) {
+                $this->createNotification(
+                    $userId,
+                    Notification::TYPE_VOUCHER_CREATED,
+                    'Voucher mới: ' . $voucherCode,
+                    $message,
+                    ['voucher_code' => $voucherCode]
+                );
+            }
+        } catch (\Throwable) {
+            // Notification failure must not block voucher creation.
         }
     }
 
@@ -95,13 +133,13 @@ final class NotificationService
 
                 $daysLeft = $expiresAt !== '' ? max(0, (int) ceil((strtotime($expiresAt) - time()) / 86400)) : 0;
                 $message = $daysLeft <= 1
-                    ? sprintf('Tai khoan %s cua ban se het han trong vong 24 gio. Hay gia han ngay!', $productName)
-                    : sprintf('Tai khoan %s cua ban con %d ngay la het han. Dung quen gia han!', $productName, $daysLeft);
+                    ? sprintf('Tài khoản %s của bạn sẽ hết hạn trong vòng 24 giờ. Hãy gia hạn ngay!', $productName)
+                    : sprintf('Tài khoản %s của bạn còn %d ngày là hết hạn. Đừng quên gia hạn!', $productName, $daysLeft);
 
                 $this->createNotification(
                     $userId,
                     Notification::TYPE_RENEWAL_REMINDER,
-                    'Sap het han: ' . $productName,
+                    'Sắp hết hạn: ' . $productName,
                     $message,
                     ['order_id' => $orderId, 'expires_at' => $expiresAt]
                 );
@@ -112,6 +150,49 @@ final class NotificationService
             return $count;
         } catch (\Throwable $exception) {
             throw new InfrastructureException('Unable to send renewal reminders.', 0, $exception);
+        }
+    }
+
+    /**
+     * Sends notifications to users whose accounts have just expired (within the window).
+     */
+    public function notifyExpiredAccounts(int $windowHours = 24): int
+    {
+        try {
+            $rows = $this->fetchExpiredOrderItems($windowHours);
+            $count = 0;
+
+            foreach ($rows as $row) {
+                $userId = trim((string) ($row['user_id'] ?? ''));
+                $productName = trim((string) ($row['product_name'] ?? 'sản phẩm'));
+                $expiresAt = trim((string) ($row['expires_at'] ?? ''));
+                $orderId = trim((string) ($row['order_id'] ?? ''));
+
+                if ($userId === '') {
+                    continue;
+                }
+
+                if ($this->hasRecentExpiredNotification($userId, $orderId)) {
+                    continue;
+                }
+
+                $this->createNotification(
+                    $userId,
+                    Notification::TYPE_ACCOUNT_EXPIRED,
+                    'Tài khoản đã hết hạn: ' . $productName,
+                    sprintf(
+                        'Tài khoản %s của bạn đã hết hạn. Mua đơn hàng mới để tiếp tục sử dụng dịch vụ!',
+                        $productName
+                    ),
+                    ['order_id' => $orderId, 'expires_at' => $expiresAt]
+                );
+
+                $count++;
+            }
+
+            return $count;
+        } catch (\Throwable $exception) {
+            throw new InfrastructureException('Unable to send expired account notifications.', 0, $exception);
         }
     }
 
@@ -196,6 +277,7 @@ final class NotificationService
         try {
             return [
                 'expiring_accounts' => $this->fetchExpiringAccountsForAdmin($expiringDaysThreshold),
+                'expired_accounts'  => $this->fetchExpiredAccountsForAdmin(),
                 'low_stock_products' => $this->fetchLowStockProductsForAdmin($lowStockThreshold),
                 'generated_at' => date('Y-m-d\TH:i:sP'),
             ];
@@ -231,6 +313,96 @@ final class NotificationService
         $row = $statement->fetch();
 
         return is_array($row) ? (int) ($row['total'] ?? 0) : 0;
+    }
+
+    private function fetchExpiredOrderItems(int $windowHours): array
+    {
+        $statement = $this->databaseService->connection()->prepare(
+            'SELECT oi.id, oi.order_id, oi.expires_at, o.user_id, p.name AS product_name
+             FROM ' . OrderItem::TABLE . ' oi
+             INNER JOIN ' . Order::TABLE . ' o ON o.id = oi.order_id
+             INNER JOIN ' . Product::TABLE . ' p ON p.id = oi.product_id
+             WHERE oi.expires_at IS NOT NULL
+               AND oi.expires_at <= NOW()
+               AND oi.expires_at >= DATE_SUB(NOW(), INTERVAL :window_hours HOUR)
+               AND o.status = :completed_status'
+        );
+        $statement->execute([
+            'window_hours'     => max(1, $windowHours),
+            'completed_status' => 'completed',
+        ]);
+
+        $rows = [];
+
+        foreach ($statement->fetchAll() as $row) {
+            if (is_array($row)) {
+                $rows[] = $row;
+            }
+        }
+
+        return $rows;
+    }
+
+    private function fetchExpiredAccountsForAdmin(int $windowDays = 7): array
+    {
+        $statement = $this->databaseService->connection()->prepare(
+            'SELECT oi.id AS order_item_id, oi.expires_at, o.id AS order_id, o.user_id,
+                    u.email AS user_email, p.name AS product_name,
+                    da.username AS account_username
+             FROM ' . OrderItem::TABLE . ' oi
+             INNER JOIN ' . Order::TABLE . ' o ON o.id = oi.order_id
+             INNER JOIN ' . Product::TABLE . ' p ON p.id = oi.product_id
+             LEFT JOIN ' . DigitalAccount::TABLE . ' da ON da.id = oi.digital_account_id
+             LEFT JOIN ' . User::TABLE . ' u ON u.id = o.user_id
+             WHERE oi.expires_at IS NOT NULL
+               AND oi.expires_at <= NOW()
+               AND oi.expires_at >= DATE_SUB(NOW(), INTERVAL :window_days DAY)
+               AND o.status = :completed_status
+             ORDER BY oi.expires_at DESC
+             LIMIT 50'
+        );
+        $statement->execute([
+            'window_days'      => max(1, $windowDays),
+            'completed_status' => 'completed',
+        ]);
+
+        $items = [];
+
+        foreach ($statement->fetchAll() as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $items[] = [
+                'order_item_id'    => (string) ($row['order_item_id'] ?? ''),
+                'order_id'         => (string) ($row['order_id'] ?? ''),
+                'user_email'       => $row['user_email'] ?? null,
+                'product_name'     => (string) ($row['product_name'] ?? ''),
+                'account_username' => $row['account_username'] ?? null,
+                'expires_at'       => $row['expires_at'] ?? null,
+            ];
+        }
+
+        return $items;
+    }
+
+    private function hasRecentExpiredNotification(string $userId, string $orderId): bool
+    {
+        $statement = $this->databaseService->connection()->prepare(
+            "SELECT COUNT(*) AS total FROM " . Notification::TABLE . "
+             WHERE user_id = :user_id
+               AND type = :type
+               AND metadata LIKE :order_pattern
+               AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)"
+        );
+        $statement->execute([
+            'user_id'       => $userId,
+            'type'          => Notification::TYPE_ACCOUNT_EXPIRED,
+            'order_pattern' => '%"order_id":"' . $orderId . '"%',
+        ]);
+        $row = $statement->fetch();
+
+        return is_array($row) && (int) ($row['total'] ?? 0) > 0;
     }
 
     private function hasRecentRenewalReminder(string $userId, string $orderId): bool
@@ -397,6 +569,24 @@ final class NotificationService
         }
 
         return in_array(strtolower(trim((string) $value)), ['1', 'true', 't', 'yes'], true);
+    }
+
+    private function fetchAllActiveUserIds(): array
+    {
+        $statement = $this->databaseService->connection()->prepare(
+            "SELECT id FROM " . User::TABLE . " WHERE status = 'active' ORDER BY id"
+        );
+        $statement->execute();
+
+        $ids = [];
+
+        foreach ($statement->fetchAll() as $row) {
+            if (is_array($row) && isset($row['id']) && trim((string) $row['id']) !== '') {
+                $ids[] = (string) $row['id'];
+            }
+        }
+
+        return $ids;
     }
 
     private function uuidV4(): string

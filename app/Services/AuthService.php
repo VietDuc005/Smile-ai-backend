@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace App\Services;
 
+use App\Exceptions\InfrastructureException;
 use App\Exceptions\UnauthorizedException;
+use App\Exceptions\ValidationException;
 use App\Jobs\SendOtpEmailJob;
 
 final class AuthService
@@ -97,6 +99,79 @@ final class AuthService
             (string) ($user['id'] ?? ''),
             'auth.login_success',
             'Logged in successfully via OTP.'
+        );
+
+        $token = $this->jwtService->issue($user);
+
+        return [
+            'token_type' => 'Bearer',
+            'access_token' => $token,
+            'expires_in' => $this->jwtService->ttl(),
+            'is_new_user' => $isNewUser,
+            'user' => $user,
+        ];
+    }
+
+    public function loginWithGoogle(string $idToken): array
+    {
+        if (trim($idToken) === '') {
+            throw new ValidationException('Google ID token is required.');
+        }
+
+        $url = 'https://oauth2.googleapis.com/tokeninfo?id_token=' . urlencode($idToken);
+        $context = stream_context_create([
+            'http' => ['timeout' => 10, 'ignore_errors' => true],
+        ]);
+        $response = @file_get_contents($url, false, $context);
+
+        if ($response === false) {
+            throw new InfrastructureException('Unable to reach Google authentication service. Please try again.');
+        }
+
+        $payload = json_decode($response, true);
+
+        if (!is_array($payload) || isset($payload['error'])) {
+            throw new UnauthorizedException('Invalid or expired Google token. Please sign in again.');
+        }
+
+        $email = trim((string) ($payload['email'] ?? ''));
+        $emailVerified = ($payload['email_verified'] ?? '') === 'true' || $payload['email_verified'] === true;
+
+        if ($email === '' || !$emailVerified) {
+            throw new UnauthorizedException('Google account email is not verified.');
+        }
+
+        $clientId = (string) ($_ENV['GOOGLE_CLIENT_ID'] ?? getenv('GOOGLE_CLIENT_ID') ?? '');
+        if ($clientId !== '' && ($payload['aud'] ?? '') !== $clientId) {
+            throw new UnauthorizedException('Google token is not issued for this application.');
+        }
+
+        $normalizedEmail = $this->otpService->normalizeEmail($email);
+        $existingUser = $this->userService->findByEmail($normalizedEmail);
+
+        if ($existingUser !== null) {
+            $this->userService->ensureActive($existingUser);
+        }
+
+        $isNewUser = $existingUser === null;
+        $user = $existingUser ?? $this->userService->createFromEmail($normalizedEmail);
+        $this->userService->ensureActive($user);
+        $this->userService->touchLastLogin((string) ($user['id'] ?? ''));
+        $user = $this->userService->findById((string) ($user['id'] ?? '')) ?? $user;
+
+        if ($isNewUser) {
+            $this->safeLog(
+                (string) ($user['id'] ?? ''),
+                'auth.account_created',
+                'Account created automatically via Google Sign-In.',
+                ['email' => $user['email'] ?? '']
+            );
+        }
+
+        $this->safeLog(
+            (string) ($user['id'] ?? ''),
+            'auth.login_success',
+            'Logged in successfully via Google.'
         );
 
         $token = $this->jwtService->issue($user);

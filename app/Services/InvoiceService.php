@@ -14,14 +14,18 @@ final class InvoiceService
 
     private EnvService $envService;
 
+    private TagService $tagService;
+
     public function __construct(
         ?DatabaseService $databaseService = null,
         ?EncryptionService $encryptionService = null,
-        ?EnvService $envService = null
+        ?EnvService $envService = null,
+        ?TagService $tagService = null
     ) {
         $this->databaseService = $databaseService ?? new DatabaseService();
         $this->encryptionService = $encryptionService ?? new EncryptionService();
         $this->envService = $envService ?? new EnvService();
+        $this->tagService = $tagService ?? new TagService($this->databaseService);
     }
 
     public function buildForOrder(string $orderId, string $userId): array
@@ -80,7 +84,7 @@ final class InvoiceService
     {
         $statement = $this->databaseService->connection()->prepare(
             'SELECT oi.id, oi.unit_price, oi.expires_at,
-                    p.name AS product_name, p.description AS product_description, p.duration_days,
+                    p.id AS product_id, p.name AS product_name, p.description AS product_description, p.duration_days,
                     da.username AS account_username, da.password AS account_password
              FROM Order_Items oi
              INNER JOIN Products p ON p.id = oi.product_id
@@ -89,13 +93,22 @@ final class InvoiceService
              ORDER BY oi.created_at ASC'
         );
         $statement->execute(['order_id' => $orderId]);
-        $items = [];
+        $rows = [];
 
         foreach ($statement->fetchAll() as $row) {
-            if (!is_array($row)) {
-                continue;
+            if (is_array($row)) {
+                $rows[] = $row;
             }
+        }
 
+        $productIds = array_values(array_unique(array_filter(
+            array_map(static fn (array $r): string => trim((string) ($r['product_id'] ?? '')), $rows),
+            static fn (string $id): bool => $id !== ''
+        )));
+        $tagsByProductId = $this->tagService->loadTagsForProductIds($productIds);
+        $items = [];
+
+        foreach ($rows as $row) {
             $username = $row['account_username'] ?? null;
             $plainPassword = null;
 
@@ -107,6 +120,14 @@ final class InvoiceService
                 }
             }
 
+            $productId = trim((string) ($row['product_id'] ?? ''));
+            $rawTags = $tagsByProductId[$productId] ?? [];
+            $tags = array_values(array_map(static fn (array $t): array => [
+                'name' => (string) ($t['name'] ?? ''),
+                'guide_title' => $t['guide_title'] ?? null,
+                'guide_content' => $t['guide_content'] ?? null,
+            ], $rawTags));
+
             $items[] = [
                 'product_name' => (string) ($row['product_name'] ?? ''),
                 'product_description' => $row['product_description'] ?? null,
@@ -115,6 +136,7 @@ final class InvoiceService
                 'expires_at' => $row['expires_at'] ?? null,
                 'account_username' => $username,
                 'account_password' => $plainPassword,
+                'tags' => $tags,
             ];
         }
 

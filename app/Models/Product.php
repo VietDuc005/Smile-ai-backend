@@ -18,6 +18,7 @@ final class Product
             'price' => 'decimal:10,2',
             'duration_days' => 'integer',
             'image_url' => 'string|null',
+            'gallery_images' => 'json-text|null',
             'requires_inventory' => 'boolean',
             'inventory_allocation_mode' => 'enum:exclusive,shared',
             'requires_customer_email' => 'boolean',

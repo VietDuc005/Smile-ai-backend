@@ -211,6 +211,19 @@ final class UserService
         return $this->requireCustomer($userId);
     }
 
+    public function deleteCustomer(string $userId): void
+    {
+        $this->requireCustomer($userId);
+
+        $statement = $this->databaseService->connection()->prepare(
+            'DELETE FROM ' . User::TABLE . ' WHERE id = :id AND role = :role'
+        );
+        $statement->execute([
+            'id' => trim($userId),
+            'role' => 'user',
+        ]);
+    }
+
     private function requireUser(string $userId): array
     {
         $user = $this->findById(trim($userId));

@@ -30,6 +30,8 @@ final class OrderService
 
     private UserActivityService $userActivityService;
 
+    private VoucherService $voucherService;
+
     public function __construct(
         ?DatabaseService $databaseService = null,
         ?ProductService $productService = null,
@@ -37,7 +39,8 @@ final class OrderService
         ?PaymentService $paymentService = null,
         ?EncryptionService $encryptionService = null,
         ?UserActivityService $userActivityService = null,
-        ?NotificationService $notificationService = null
+        ?NotificationService $notificationService = null,
+        ?VoucherService $voucherService = null
     ) {
         $this->databaseService = $databaseService ?? new DatabaseService();
         $this->productService = $productService ?? new ProductService();
@@ -46,6 +49,7 @@ final class OrderService
         $this->encryptionService = $encryptionService ?? new EncryptionService();
         $this->userActivityService = $userActivityService ?? new UserActivityService($this->databaseService);
         $this->notificationService = $notificationService ?? new NotificationService($this->databaseService);
+        $this->voucherService = $voucherService ?? new VoucherService($this->databaseService);
     }
 
     public function createForUser(array $user, array $payload): array
@@ -80,26 +84,46 @@ final class OrderService
         }
 
         $this->inventoryService->ensureAvailableStock($productId, $quantity);
+
+        $rawTotal = round(((float) ($product['price'] ?? 0)) * $quantity, 2);
+        $discountAmount = 0.0;
+        $voucherId = null;
+        $voucherCode = trim((string) ($payload['voucher_code'] ?? ''));
+
+        if ($voucherCode !== '') {
+            $voucherResult = $this->voucherService->validateForOrder($voucherCode, $rawTotal);
+            $discountAmount = $voucherResult['discount_amount'];
+            $voucherId = $voucherResult['voucher_id'];
+        }
+
+        $totalAmount = round(max(0, $rawTotal - $discountAmount), 2);
+
         $connection = $this->databaseService->connection();
         $connection->beginTransaction();
 
         try {
             $orderId = $this->uuidV4();
             $transferSyntax = $this->generateUniqueTransferSyntax($connection);
-            $totalAmount = round(((float) ($product['price'] ?? 0)) * $quantity, 2);
             $paymentPreview = [
                 'transfer_syntax' => $transferSyntax,
                 'total_amount' => $totalAmount,
             ];
             $paymentInstructions = $this->paymentService->buildPaymentInstructions($paymentPreview);
+
+            if ($voucherId !== null) {
+                $this->voucherService->consumeVoucher($voucherId, $connection);
+            }
+
             $orderStatement = $connection->prepare(
-                'INSERT INTO ' . Order::TABLE . ' (id, user_id, customer_email, total_amount, transfer_syntax, payment_provider, payment_qr_url, payment_payload, status) VALUES (:id, :user_id, :customer_email, :total_amount, :transfer_syntax, :payment_provider, :payment_qr_url, :payment_payload, :status)'
+                'INSERT INTO ' . Order::TABLE . ' (id, user_id, customer_email, total_amount, voucher_id, discount_amount, transfer_syntax, payment_provider, payment_qr_url, payment_payload, status) VALUES (:id, :user_id, :customer_email, :total_amount, :voucher_id, :discount_amount, :transfer_syntax, :payment_provider, :payment_qr_url, :payment_payload, :status)'
             );
             $orderStatement->execute([
                 'id' => $orderId,
                 'user_id' => $userId,
                 'customer_email' => $customerEmail,
                 'total_amount' => $totalAmount,
+                'voucher_id' => $voucherId,
+                'discount_amount' => $discountAmount,
                 'transfer_syntax' => $transferSyntax,
                 'payment_provider' => $paymentInstructions['provider'],
                 'payment_qr_url' => $paymentInstructions['qr_image_url'],
@@ -270,6 +294,82 @@ final class OrderService
     public function findForAdmin(string $orderId): array
     {
         return $this->requireAdminOrder($orderId, null, false);
+    }
+
+    public function manualProvisionItem(string $orderId, string $itemId, array $payload): array
+    {
+        $username = trim((string) ($payload['username'] ?? ''));
+        $rawPassword = trim((string) ($payload['password'] ?? ''));
+        $rawExpiresAt = trim((string) ($payload['expires_at'] ?? ''));
+
+        if ($username === '') {
+            throw new ValidationException('Field username is required.');
+        }
+
+        if ($rawPassword === '') {
+            throw new ValidationException('Field password is required.');
+        }
+
+        $connection = $this->databaseService->connection();
+
+        // Verify order exists
+        $this->requireAdminOrder(trim($orderId), $connection);
+
+        // Find order item and verify it belongs to this order
+        $itemStatement = $connection->prepare(
+            'SELECT id, product_id, digital_account_id FROM ' . OrderItem::TABLE . ' WHERE id = :id AND order_id = :order_id LIMIT 1'
+        );
+        $itemStatement->execute(['id' => trim($itemId), 'order_id' => trim($orderId)]);
+        $itemRow = $itemStatement->fetch();
+
+        if (!is_array($itemRow)) {
+            throw new NotFoundException('Order item was not found.');
+        }
+
+        $existingAccountId = $itemRow['digital_account_id'] ?? null;
+        $productId = (string) ($itemRow['product_id'] ?? '');
+        $encryptedPassword = $this->encryptionService->encrypt($rawPassword);
+
+        $ts = $rawExpiresAt !== '' ? strtotime($rawExpiresAt) : false;
+        $expiresAt = ($ts !== false && $ts > 0) ? date('Y-m-d H:i:s', $ts) : null;
+
+        try {
+            if ($existingAccountId !== null) {
+                $stmt = $connection->prepare(
+                    'UPDATE ' . DigitalAccount::TABLE . ' SET username = :username, password = :password, status = \'sold\', expires_at = :expires_at, updated_at = CURRENT_TIMESTAMP WHERE id = :id'
+                );
+                $stmt->execute([
+                    'username' => $username,
+                    'password' => $encryptedPassword,
+                    'expires_at' => $expiresAt,
+                    'id' => $existingAccountId,
+                ]);
+            } else {
+                $newAccountId = $this->uuidV4();
+                $stmt = $connection->prepare(
+                    'INSERT INTO ' . DigitalAccount::TABLE . ' (id, product_id, username, password, status, expires_at, seat_capacity, seat_used) VALUES (:id, :product_id, :username, :password, \'sold\', :expires_at, 1, 1)'
+                );
+                $stmt->execute([
+                    'id' => $newAccountId,
+                    'product_id' => $productId,
+                    'username' => $username,
+                    'password' => $encryptedPassword,
+                    'expires_at' => $expiresAt,
+                ]);
+                $linkStmt = $connection->prepare(
+                    'UPDATE ' . OrderItem::TABLE . ' SET digital_account_id = :account_id, expires_at = :expires_at, updated_at = CURRENT_TIMESTAMP WHERE id = :id'
+                );
+                $linkStmt->execute([
+                    'account_id' => $newAccountId,
+                    'expires_at' => $expiresAt,
+                    'id' => trim($itemId),
+                ]);
+            }
+        } catch (PDOException $exception) {
+            throw new InfrastructureException('Unable to provision account for order item.', 0, $exception);
+        }
+
+        return $this->requireAdminOrder(trim($orderId));
     }
 
     public function cancelForAdmin(string $orderId): array
@@ -446,7 +546,7 @@ final class OrderService
     private function findOrder(string $orderId, ?PDO $connection = null, bool $includeSecrets = false): ?array
     {
         $statement = ($connection ?? $this->databaseService->connection())->prepare(
-            'SELECT o.id, o.user_id, o.customer_email, o.total_amount, o.transfer_syntax, o.payment_provider, o.payment_qr_url, o.payment_payload, o.status, o.paid_at, o.created_at, o.updated_at, u.email AS user_email
+            'SELECT o.id, o.user_id, o.customer_email, o.total_amount, o.voucher_id, o.discount_amount, o.transfer_syntax, o.payment_provider, o.payment_qr_url, o.payment_payload, o.status, o.paid_at, o.created_at, o.updated_at, u.email AS user_email
              FROM ' . Order::TABLE . ' o
              LEFT JOIN Users u ON u.id = o.user_id
              WHERE o.id = :id
@@ -485,6 +585,9 @@ final class OrderService
             'amount' => (float) ($row['total_amount'] ?? 0),
         ];
 
+        $discountAmt = (float) ($row['discount_amount'] ?? 0);
+        $totalAmt = (float) ($row['total_amount'] ?? 0);
+
         return [
             'id' => (string) ($row['id'] ?? ''),
             'user' => [
@@ -492,7 +595,10 @@ final class OrderService
                 'email' => $row['user_email'] ?? null,
             ],
             'customer_email' => $row['customer_email'] ?? null,
-            'total_amount' => (float) ($row['total_amount'] ?? 0),
+            'total_amount' => $totalAmt,
+            'discount_amount' => $discountAmt,
+            'original_amount' => $totalAmt + $discountAmt,
+            'voucher_id' => $row['voucher_id'] ?? null,
             'transfer_syntax' => (string) ($row['transfer_syntax'] ?? ''),
             'payment' => $payment,
             'status' => (string) ($row['status'] ?? 'pending'),
@@ -843,7 +949,7 @@ final class OrderService
 
         [$inClause, $params] = $this->buildInClauseParams('order_id', $normalizedIds);
         $statement = ($connection ?? $this->databaseService->connection())->prepare(
-            'SELECT o.id, o.user_id, o.customer_email, o.total_amount, o.transfer_syntax, o.payment_provider, o.payment_qr_url, o.payment_payload, o.status, o.paid_at, o.created_at, o.updated_at, u.email AS user_email
+            'SELECT o.id, o.user_id, o.customer_email, o.total_amount, o.voucher_id, o.discount_amount, o.transfer_syntax, o.payment_provider, o.payment_qr_url, o.payment_payload, o.status, o.paid_at, o.created_at, o.updated_at, u.email AS user_email
              FROM ' . Order::TABLE . ' o
              LEFT JOIN Users u ON u.id = o.user_id
              WHERE o.id IN (' . $inClause . ')'

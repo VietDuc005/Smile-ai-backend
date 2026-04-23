@@ -54,6 +54,23 @@ final class AuthController
         }
     }
 
+    public function loginWithGoogle(array $payload): array
+    {
+        try {
+            $result = $this->authService->loginWithGoogle((string) ($payload['credential'] ?? ''));
+
+            return $this->success('Authenticated successfully via Google.', $result);
+        } catch (ValidationException $exception) {
+            return $this->error($exception->getMessage(), 422);
+        } catch (UnauthorizedException $exception) {
+            return $this->error($exception->getMessage(), 401);
+        } catch (ForbiddenException $exception) {
+            return $this->error($exception->getMessage(), 403);
+        } catch (InfrastructureException $exception) {
+            return $this->error($exception->getMessage(), 500);
+        }
+    }
+
     public function me(array $request): array
     {
         $user = $request['auth_user'] ?? null;

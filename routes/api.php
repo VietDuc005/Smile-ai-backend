@@ -7,6 +7,9 @@ use App\Http\Controllers\Api\Admin\DashboardController;
 use App\Http\Controllers\Api\Admin\InventoryController as AdminInventoryController;
 use App\Http\Controllers\Api\Admin\OrderController as AdminOrderController;
 use App\Http\Controllers\Api\Admin\ProductController as AdminProductController;
+use App\Http\Controllers\Api\Admin\TagController as AdminTagController;
+use App\Http\Controllers\Api\Admin\VoucherController as AdminVoucherController;
+use App\Http\Controllers\Api\Client\VoucherController as ClientVoucherController;
 use App\Http\Controllers\Api\Admin\TicketController as AdminTicketController;
 use App\Http\Controllers\Api\Admin\UserController as AdminUserController;
 use App\Http\Controllers\Api\AuthController;
@@ -35,6 +38,7 @@ return [
     'auth' => [
         ['method' => 'POST', 'uri' => '/auth/request-otp', 'action' => [AuthController::class, 'requestOtp'], 'middleware' => [], 'access' => 'guest'],
         ['method' => 'POST', 'uri' => '/auth/verify-otp', 'action' => [AuthController::class, 'verifyOtp'], 'middleware' => [], 'access' => 'guest'],
+        ['method' => 'POST', 'uri' => '/auth/google', 'action' => [AuthController::class, 'loginWithGoogle'], 'middleware' => [], 'access' => 'guest'],
         ['method' => 'GET', 'uri' => '/auth/me', 'action' => [AuthController::class, 'me'], 'middleware' => ['auth.jwt'], 'access' => 'authenticated'],
     ],
     'admin' => [
@@ -53,6 +57,7 @@ return [
         ['method' => 'GET', 'uri' => '/admin/orders/{id}', 'action' => [AdminOrderController::class, 'show'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
         ['method' => 'POST', 'uri' => '/admin/orders/{id}/match', 'action' => [AdminOrderController::class, 'match'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
         ['method' => 'POST', 'uri' => '/admin/orders/{id}/cancel', 'action' => [AdminOrderController::class, 'cancel'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
+        ['method' => 'POST', 'uri' => '/admin/orders/{id}/items/{itemId}/provision', 'action' => [AdminOrderController::class, 'provision'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
         ['method' => 'GET', 'uri' => '/admin/tickets', 'action' => [AdminTicketController::class, 'index'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
         ['method' => 'GET', 'uri' => '/admin/tickets/{id}', 'action' => [AdminTicketController::class, 'show'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
         ['method' => 'POST', 'uri' => '/admin/tickets/{id}/reply', 'action' => [AdminTicketController::class, 'reply'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
@@ -62,10 +67,21 @@ return [
         ['method' => 'GET', 'uri' => '/admin/users', 'action' => [AdminUserController::class, 'index'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
         ['method' => 'POST', 'uri' => '/admin/users/{id}/block', 'action' => [AdminUserController::class, 'block'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
         ['method' => 'POST', 'uri' => '/admin/users/{id}/unblock', 'action' => [AdminUserController::class, 'unblock'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
+        ['method' => 'DELETE', 'uri' => '/admin/users/{id}', 'action' => [AdminUserController::class, 'destroy'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
+        ['method' => 'GET', 'uri' => '/admin/tags', 'action' => [AdminTagController::class, 'index'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
+        ['method' => 'POST', 'uri' => '/admin/tags', 'action' => [AdminTagController::class, 'store'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
+        ['method' => 'PUT', 'uri' => '/admin/tags/{id}', 'action' => [AdminTagController::class, 'update'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
+        ['method' => 'DELETE', 'uri' => '/admin/tags/{id}', 'action' => [AdminTagController::class, 'destroy'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
+        ['method' => 'GET', 'uri' => '/admin/vouchers', 'action' => [AdminVoucherController::class, 'index'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
+        ['method' => 'POST', 'uri' => '/admin/vouchers', 'action' => [AdminVoucherController::class, 'store'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
+        ['method' => 'PUT', 'uri' => '/admin/vouchers/{id}', 'action' => [AdminVoucherController::class, 'update'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
+        ['method' => 'DELETE', 'uri' => '/admin/vouchers/{id}', 'action' => [AdminVoucherController::class, 'destroy'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
         ['method' => 'GET', 'uri' => '/admin/alerts', 'action' => [AlertController::class, 'index'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
         ['method' => 'POST', 'uri' => '/admin/alerts/renewal-reminders', 'action' => [AlertController::class, 'sendRenewalReminders'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
+        ['method' => 'POST', 'uri' => '/admin/alerts/expired-notifications', 'action' => [AlertController::class, 'sendExpiredNotifications'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
     ],
     'client' => [
+        ['method' => 'POST', 'uri' => '/vouchers/validate', 'action' => [ClientVoucherController::class, 'validate'], 'middleware' => ['auth.jwt', 'role.user'], 'access' => 'user'],
         ['method' => 'GET', 'uri' => '/products', 'action' => [ClientProductController::class, 'index'], 'middleware' => [], 'access' => 'guest'],
         ['method' => 'GET', 'uri' => '/products/{id}', 'action' => [ClientProductController::class, 'show'], 'middleware' => [], 'access' => 'guest'],
         ['method' => 'GET', 'uri' => '/products/{productId}/availability', 'action' => [ClientInventoryController::class, 'availability'], 'middleware' => [], 'access' => 'guest'],

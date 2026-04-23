@@ -14,9 +14,12 @@ final class ProductService
 {
     private DatabaseService $databaseService;
 
-    public function __construct(?DatabaseService $databaseService = null)
+    private TagService $tagService;
+
+    public function __construct(?DatabaseService $databaseService = null, ?TagService $tagService = null)
     {
         $this->databaseService = $databaseService ?? new DatabaseService();
+        $this->tagService = $tagService ?? new TagService($this->databaseService);
     }
 
     public function listPublic(array $filters = []): array
@@ -116,9 +119,10 @@ final class ProductService
     public function create(array $payload): array
     {
         $normalized = $this->normalizePayload($payload, false);
+        $tagIds = $this->normalizeTagIds($payload['tag_ids'] ?? null);
         $id = $this->uuidV4();
         $statement = $this->databaseService->connection()->prepare(
-            'INSERT INTO ' . Product::TABLE . ' (id, name, description, features, price, duration_days, image_url, requires_inventory, inventory_allocation_mode, requires_customer_email, stock_quantity, is_active) VALUES (:id, :name, :description, :features, :price, :duration_days, :image_url, :requires_inventory, :inventory_allocation_mode, :requires_customer_email, :stock_quantity, :is_active)'
+            'INSERT INTO ' . Product::TABLE . ' (id, name, description, features, price, duration_days, image_url, gallery_images, requires_inventory, inventory_allocation_mode, requires_customer_email, stock_quantity, is_active) VALUES (:id, :name, :description, :features, :price, :duration_days, :image_url, :gallery_images, :requires_inventory, :inventory_allocation_mode, :requires_customer_email, :stock_quantity, :is_active)'
         );
 
         try {
@@ -130,6 +134,7 @@ final class ProductService
                 'price' => $normalized['price'],
                 'duration_days' => $normalized['duration_days'],
                 'image_url' => $normalized['image_url'],
+                'gallery_images' => $this->encodeFeatures($normalized['gallery_images']),
                 'requires_inventory' => $normalized['requires_inventory'] ? 1 : 0,
                 'inventory_allocation_mode' => $normalized['inventory_allocation_mode'],
                 'requires_customer_email' => $normalized['requires_customer_email'] ? 1 : 0,
@@ -140,6 +145,8 @@ final class ProductService
             throw new InfrastructureException('Unable to create product.', 0, $exception);
         }
 
+        $this->tagService->syncProductTags($id, $tagIds);
+
         return $this->requireProduct($id);
     }
 
@@ -148,7 +155,7 @@ final class ProductService
         $existingProduct = $this->requireProduct($productId);
         $normalized = $this->normalizePayload($payload, true, $existingProduct);
         $statement = $this->databaseService->connection()->prepare(
-            'UPDATE ' . Product::TABLE . ' SET name = :name, description = :description, features = :features, price = :price, duration_days = :duration_days, image_url = :image_url, requires_inventory = :requires_inventory, inventory_allocation_mode = :inventory_allocation_mode, requires_customer_email = :requires_customer_email, stock_quantity = :stock_quantity, is_active = :is_active, updated_at = CURRENT_TIMESTAMP WHERE id = :id'
+            'UPDATE ' . Product::TABLE . ' SET name = :name, description = :description, features = :features, price = :price, duration_days = :duration_days, image_url = :image_url, gallery_images = :gallery_images, requires_inventory = :requires_inventory, inventory_allocation_mode = :inventory_allocation_mode, requires_customer_email = :requires_customer_email, stock_quantity = :stock_quantity, is_active = :is_active, updated_at = CURRENT_TIMESTAMP WHERE id = :id'
         );
 
         try {
@@ -160,6 +167,7 @@ final class ProductService
                 'price' => $normalized['price'],
                 'duration_days' => $normalized['duration_days'],
                 'image_url' => $normalized['image_url'],
+                'gallery_images' => $this->encodeFeatures($normalized['gallery_images']),
                 'requires_inventory' => $normalized['requires_inventory'] ? 1 : 0,
                 'inventory_allocation_mode' => $normalized['inventory_allocation_mode'],
                 'requires_customer_email' => $normalized['requires_customer_email'] ? 1 : 0,
@@ -168,6 +176,10 @@ final class ProductService
             ]);
         } catch (PDOException $exception) {
             throw new InfrastructureException('Unable to update product.', 0, $exception);
+        }
+
+        if (array_key_exists('tag_ids', $payload)) {
+            $this->tagService->syncProductTags($existingProduct['id'], $this->normalizeTagIds($payload['tag_ids']));
         }
 
         return $this->requireProduct($existingProduct['id']);
@@ -212,7 +224,15 @@ final class ProductService
         ]);
         $row = $statement->fetch();
 
-        return is_array($row) ? $this->hydrateProduct($row) : null;
+        if (!is_array($row)) {
+            return null;
+        }
+
+        $product = $this->hydrateProduct($row);
+        $tagsByProductId = $this->tagService->loadTagsForProductIds([$product['id']]);
+        $product['tags'] = $tagsByProductId[$product['id']] ?? [];
+
+        return $product;
     }
 
     private function requireProduct(string $productId): array
@@ -266,6 +286,7 @@ final class ProductService
         $price = $this->decimalValue($payload, 'price', $partial, (float) ($existing['price'] ?? 0));
         $durationDays = $this->integerValue($payload, 'duration_days', $partial, (int) ($existing['duration_days'] ?? 0));
         $imageUrl = $this->nullableStringValue($payload, 'image_url', $partial, $existing['image_url'] ?? null);
+        $galleryImages = $this->galleryImagesValue($payload, $partial, $existing['gallery_images'] ?? []);
         $requiresInventory = $this->booleanValue($payload, 'requires_inventory', $partial, (bool) ($existing['requires_inventory'] ?? true));
         $inventoryAllocationMode = $this->inventoryAllocationModeValue(
             $payload,
@@ -312,6 +333,7 @@ final class ProductService
             'price' => round($price, 2),
             'duration_days' => $durationDays,
             'image_url' => $imageUrl,
+            'gallery_images' => $galleryImages,
             'requires_inventory' => $requiresInventory,
             'inventory_allocation_mode' => $inventoryAllocationMode,
             'requires_customer_email' => $requiresCustomerEmail,
@@ -488,6 +510,17 @@ final class ProductService
             $items[] = $this->hydrateProduct($row);
         }
 
+        if ($items === []) {
+            return $items;
+        }
+
+        $productIds = array_column($items, 'id');
+        $tagsByProductId = $this->tagService->loadTagsForProductIds($productIds);
+
+        foreach ($items as &$item) {
+            $item['tags'] = $tagsByProductId[$item['id']] ?? [];
+        }
+
         return $items;
     }
 
@@ -501,6 +534,8 @@ final class ProductService
             'price' => (float) ($row['price'] ?? 0),
             'duration_days' => (int) ($row['duration_days'] ?? 0),
             'image_url' => $row['image_url'] ?? null,
+            'gallery_images' => $this->decodeFeatures($row['gallery_images'] ?? null),
+            'tags' => [],
             'requires_inventory' => $this->databaseBoolean($row['requires_inventory'] ?? true),
             'inventory_allocation_mode' => (string) ($row['inventory_allocation_mode'] ?? 'exclusive'),
             'requires_customer_email' => $this->databaseBoolean($row['requires_customer_email'] ?? false),
@@ -561,9 +596,40 @@ final class ProductService
         return in_array($normalized, ['1', 'true', 't', 'yes'], true);
     }
 
+    private function galleryImagesValue(array $payload, bool $partial, array $fallback): array
+    {
+        if (!array_key_exists('gallery_images', $payload)) {
+            return $partial ? $fallback : [];
+        }
+
+        $value = $payload['gallery_images'];
+
+        if ($value === null) {
+            return [];
+        }
+
+        if (is_string($value)) {
+            $trimmed = trim($value);
+            if ($trimmed === '') {
+                return [];
+            }
+            $decoded = json_decode($trimmed, true);
+            if (is_array($decoded)) {
+                return $this->sanitizeFeatureList($decoded);
+            }
+            return [$trimmed];
+        }
+
+        if (is_array($value)) {
+            return $this->sanitizeFeatureList($value);
+        }
+
+        return [];
+    }
+
     private function baseSelect(): string
     {
-        return 'SELECT p.id, p.name, p.description, p.features, p.price, p.duration_days, p.image_url, p.requires_inventory, p.inventory_allocation_mode, p.requires_customer_email, p.stock_quantity, p.is_active, p.created_at, p.updated_at, ' .
+        return 'SELECT p.id, p.name, p.description, p.features, p.price, p.duration_days, p.image_url, p.gallery_images, p.requires_inventory, p.inventory_allocation_mode, p.requires_customer_email, p.stock_quantity, p.is_active, p.created_at, p.updated_at, ' .
             "CASE WHEN COALESCE(p.requires_inventory, 1) = 1 " .
             "THEN (SELECT COALESCE(SUM(CASE " .
             "WHEN COALESCE(p.inventory_allocation_mode, 'exclusive') = 'shared' " .
@@ -578,6 +644,18 @@ final class ProductService
             "END), 0) FROM Digital_Accounts da WHERE da.product_id = p.id) " .
             "ELSE GREATEST(COALESCE(p.stock_quantity, 0), 0) END AS available_inventory " .
             'FROM ' . Product::TABLE . ' p';
+    }
+
+    private function normalizeTagIds(mixed $value): array
+    {
+        if (!is_array($value)) {
+            return [];
+        }
+
+        return array_values(array_unique(array_filter(
+            array_map(static fn (mixed $id): string => trim((string) $id), $value),
+            static fn (string $id): bool => $id !== ''
+        )));
     }
 
     private function uuidV4(): string

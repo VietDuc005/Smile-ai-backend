@@ -96,6 +96,31 @@ final class UserController
         }
     }
 
+    public function destroy(array $request): array
+    {
+        $routeParams = is_array($request['route_params'] ?? null) ? $request['route_params'] : [];
+        $authUser = is_array($request['auth_user'] ?? null) ? $request['auth_user'] : [];
+        $userId = (string) ($routeParams['id'] ?? '');
+
+        try {
+            $this->userService->deleteCustomer($userId);
+            $this->safeLog(
+                $userId,
+                'user.deleted',
+                'Account deleted by admin.',
+                ['admin_id' => $authUser['id'] ?? null]
+            );
+
+            return $this->success('Customer deleted successfully.', []);
+        } catch (NotFoundException $exception) {
+            return $this->error($exception->getMessage(), 404);
+        } catch (ForbiddenException $exception) {
+            return $this->error($exception->getMessage(), 403);
+        } catch (InfrastructureException $exception) {
+            return $this->error($exception->getMessage(), 500);
+        }
+    }
+
     private function success(string $message, array $data, int $statusCode = 200): array
     {
         return [
