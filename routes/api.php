@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\Admin\AlertController;
 use App\Http\Controllers\Api\Admin\DashboardController;
 use App\Http\Controllers\Api\Admin\InventoryController as AdminInventoryController;
 use App\Http\Controllers\Api\Admin\OrderController as AdminOrderController;
+use App\Http\Controllers\Api\Admin\PostController as AdminPostController;
 use App\Http\Controllers\Api\Admin\ProductController as AdminProductController;
 use App\Http\Controllers\Api\Admin\TagController as AdminTagController;
 use App\Http\Controllers\Api\Admin\VoucherController as AdminVoucherController;
@@ -17,6 +18,7 @@ use App\Http\Controllers\Api\Client\InventoryController as ClientInventoryContro
 use App\Http\Controllers\Api\Client\InvoiceController as ClientInvoiceController;
 use App\Http\Controllers\Api\Client\NotificationController as ClientNotificationController;
 use App\Http\Controllers\Api\Client\OrderController as ClientOrderController;
+use App\Http\Controllers\Api\Client\PostController as ClientPostController;
 use App\Http\Controllers\Api\Client\ProductController as ClientProductController;
 use App\Http\Controllers\Api\Client\TicketController as ClientTicketController;
 use App\Http\Controllers\Api\Client\UserController as ClientUserController;
@@ -79,9 +81,18 @@ return [
         ['method' => 'GET', 'uri' => '/admin/alerts', 'action' => [AlertController::class, 'index'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
         ['method' => 'POST', 'uri' => '/admin/alerts/renewal-reminders', 'action' => [AlertController::class, 'sendRenewalReminders'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
         ['method' => 'POST', 'uri' => '/admin/alerts/expired-notifications', 'action' => [AlertController::class, 'sendExpiredNotifications'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
+        ['method' => 'GET', 'uri' => '/admin/posts', 'action' => [AdminPostController::class, 'index'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
+        ['method' => 'GET', 'uri' => '/admin/posts/{id}', 'action' => [AdminPostController::class, 'show'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
+        ['method' => 'POST', 'uri' => '/admin/posts', 'action' => [AdminPostController::class, 'store'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
+        ['method' => 'PUT', 'uri' => '/admin/posts/{id}', 'action' => [AdminPostController::class, 'update'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
+        ['method' => 'DELETE', 'uri' => '/admin/posts/{id}', 'action' => [AdminPostController::class, 'destroy'], 'middleware' => ['auth.jwt', 'role.admin'], 'access' => 'admin'],
     ],
     'client' => [
         ['method' => 'POST', 'uri' => '/vouchers/validate', 'action' => [ClientVoucherController::class, 'validate'], 'middleware' => ['auth.jwt', 'role.user'], 'access' => 'user'],
+        ['method' => 'GET', 'uri' => '/posts', 'action' => [ClientPostController::class, 'index'], 'middleware' => [], 'access' => 'guest'],
+        ['method' => 'GET', 'uri' => '/posts/{slug}', 'action' => [ClientPostController::class, 'show'], 'middleware' => [], 'access' => 'guest'],
+        ['method' => 'POST', 'uri' => '/posts/{slug}/view', 'action' => [ClientPostController::class, 'recordView'], 'middleware' => [], 'access' => 'guest'],
+        ['method' => 'POST', 'uri' => '/posts/{slug}/like', 'action' => [ClientPostController::class, 'like'], 'middleware' => [], 'access' => 'guest'],
         ['method' => 'GET', 'uri' => '/products', 'action' => [ClientProductController::class, 'index'], 'middleware' => [], 'access' => 'guest'],
         ['method' => 'GET', 'uri' => '/products/{id}', 'action' => [ClientProductController::class, 'show'], 'middleware' => [], 'access' => 'guest'],
         ['method' => 'GET', 'uri' => '/products/{productId}/availability', 'action' => [ClientInventoryController::class, 'availability'], 'middleware' => [], 'access' => 'guest'],
